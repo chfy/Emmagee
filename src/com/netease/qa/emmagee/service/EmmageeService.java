@@ -128,6 +128,10 @@ public class EmmageeService extends Service {
 	private CurrentInfo currentInfo;
 	private FpsInfo fpsInfo;
 	private BatteryInfoBroadcastReceiver batteryBroadcast = null;
+	
+	// 定时任务计时
+	private int alreadyRunTime;
+	private int scheduleTime;
 
 	// get start time
 	private static final int MAX_START_TIME_COUNT = 5;
@@ -259,6 +263,8 @@ public class EmmageeService extends Service {
 		SharedPreferences preferences = Settings
 				.getDefaultSharedPreferences(getApplicationContext());
 		int interval = preferences.getInt(Settings.KEY_INTERVAL, 5);
+		scheduleTime = preferences.getInt(Settings.KEY_SCHEDULE_TIME, 0) * 60 * 1000;
+		Log.d("emm", "read from preference:" + preferences.getInt(Settings.KEY_SCHEDULE_TIME, 0));
 		delaytime = interval * 1000;
 		isFloating = preferences.getBoolean(Settings.KEY_ISFLOAT, true);
 		sender = preferences.getString(Settings.KEY_SENDER, BLANK_STRING);
@@ -427,7 +433,18 @@ public class EmmageeService extends Service {
 		public void run() {
 			if (!isServiceStop) {
 				dataRefresh();
-				handler.postDelayed(this, delaytime);
+				if (alreadyRunTime >= scheduleTime && scheduleTime != 0) {
+					Log.d("emm", "to finish");
+					Intent intent = new Intent();
+					intent.putExtra("isServiceStop", true);
+					intent.setAction(SERVICE_ACTION);
+					sendBroadcast(intent);
+					stopSelf();
+				} else {
+					Log.d("emm", "alreadyRunTime:" + alreadyRunTime + " scheduletime:" + scheduleTime);
+					alreadyRunTime += delaytime;
+					handler.postDelayed(this, delaytime);
+				}
 				if (isFloating && viFloatingWindow != null) {
 					windowManager.updateViewLayout(viFloatingWindow, wmParams);
 				}
