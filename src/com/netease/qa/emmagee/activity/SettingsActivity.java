@@ -17,6 +17,10 @@
 package com.netease.qa.emmagee.activity;
 
 import java.io.DataOutputStream;
+import java.text.DecimalFormat;
+
+import com.netease.qa.emmagee.R;
+import com.netease.qa.emmagee.utils.Settings;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -24,8 +28,8 @@ import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
-import android.view.Window;
 import android.view.View.OnClickListener;
+import android.view.Window;
 import android.widget.CheckBox;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -34,9 +38,6 @@ import android.widget.SeekBar;
 import android.widget.SeekBar.OnSeekBarChangeListener;
 import android.widget.TextView;
 import android.widget.Toast;
-
-import com.netease.qa.emmagee.R;
-import com.netease.qa.emmagee.utils.Settings;
 
 /**
  * Setting Page of Emmagee
@@ -51,6 +52,7 @@ public class SettingsActivity extends Activity {
 	private CheckBox chkRoot;
 	private CheckBox chkAutoStop;
 	private TextView tvTime;
+	private TextView scheduleTime;
 	private LinearLayout about;
 	private LinearLayout mailSettings;
 
@@ -67,10 +69,12 @@ public class SettingsActivity extends Activity {
 		chkRoot = (CheckBox) findViewById(R.id.is_root);
 		chkAutoStop = (CheckBox) findViewById(R.id.auto_stop);
 		tvTime = (TextView) findViewById(R.id.time);
+		scheduleTime = (TextView) findViewById(R.id.schedule_time_show);
 		about = (LinearLayout) findViewById(R.id.about);
 		mailSettings = (LinearLayout) findViewById(R.id.mail_settings);
 		SeekBar timeBar = (SeekBar) findViewById(R.id.timeline);
 		ImageView btnSave = (ImageView) findViewById(R.id.btn_set);
+		SeekBar scheduleTimeBar = (SeekBar) findViewById(R.id.schedule_time_bar);
 		RelativeLayout floatingItem = (RelativeLayout) findViewById(R.id.floating_item);
 		RelativeLayout autoStopItem = (RelativeLayout) findViewById(R.id.auto_stop_item);
 		LinearLayout layGoBack = (LinearLayout) findViewById(R.id.lay_go_back);
@@ -106,6 +110,34 @@ public class SettingsActivity extends Activity {
 				// when tracking stoped, update preferences
 				int interval = arg0.getProgress() + 1;
 				preferences.edit().putInt(Settings.KEY_INTERVAL, interval).commit();
+			}
+		});
+		
+		scheduleTimeBar.setProgress(interval);
+		scheduleTimeBar.setOnSeekBarChangeListener(new OnSeekBarChangeListener() {
+			
+			
+			@Override
+			public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+				// TODO Auto-generated method stub
+				scheduleTime.setText(String.valueOf(progress + 1));
+				
+			}
+
+			@Override
+			public void onStartTrackingTouch(SeekBar seekBar) {
+				// TODO Auto-generated method stub
+				
+			}
+
+			@Override
+			public void onStopTrackingTouch(SeekBar seekBar) {
+				// TODO Auto-generated method stub
+				// 单位  分钟；
+				int interval = seekBar.getProgress() + 1;
+				preferences.edit().putInt(Settings.KEY_SCHEDULE_TIME, interval).commit();
+				Log.d("emm", "seekbar value:" + interval);
+				
 			}
 		});
 

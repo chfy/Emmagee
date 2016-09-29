@@ -40,6 +40,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.wifi.WifiManager;
 import android.os.BatteryManager;
@@ -65,6 +66,7 @@ import com.netease.qa.emmagee.utils.Constants;
 import com.netease.qa.emmagee.utils.CpuInfo;
 import com.netease.qa.emmagee.utils.CurrentInfo;
 import com.netease.qa.emmagee.utils.EncryptData;
+import com.netease.qa.emmagee.utils.FpsInfo;
 import com.netease.qa.emmagee.utils.MailSender;
 import com.netease.qa.emmagee.utils.MemoryInfo;
 import com.netease.qa.emmagee.utils.MyApplication;
@@ -79,7 +81,8 @@ import com.netease.qa.emmagee.utils.Settings;
  */
 public class EmmageeService extends Service {
 
-	private final static String LOG_TAG = "Emmagee-" + EmmageeService.class.getSimpleName();
+	private final static String LOG_TAG = "Emmagee-"
+			+ EmmageeService.class.getSimpleName();
 
 	private static final String BLANK_STRING = "";
 
@@ -111,6 +114,7 @@ public class EmmageeService extends Service {
 	private String[] receivers;
 	private EncryptData des;
 	private ProcessInfo procInfo;
+	private int statusBarHeight;
 
 	public static BufferedWriter bw;
 	public static FileOutputStream out;
@@ -122,7 +126,12 @@ public class EmmageeService extends Service {
 	private String temperature;
 	private String voltage;
 	private CurrentInfo currentInfo;
+	private FpsInfo fpsInfo;
 	private BatteryInfoBroadcastReceiver batteryBroadcast = null;
+	
+	// 定时任务计时
+	private int alreadyRunTime;
+	private int scheduleTime;
 
 	// get start time
 	private static final int MAX_START_TIME_COUNT = 5;
@@ -139,6 +148,7 @@ public class EmmageeService extends Service {
 		super.onCreate();
 		isServiceStop = false;
 		isStop = false;
+		fpsInfo = new FpsInfo();
 		memoryInfo = new MemoryInfo();
 		procInfo = new ProcessInfo();
 		fomart = new DecimalFormat();
@@ -148,6 +158,7 @@ public class EmmageeService extends Service {
 		fomart.setMinimumFractionDigits(0);
 		des = new EncryptData("emmagee");
 		currentInfo = new CurrentInfo();
+		statusBarHeight = getStatusBarHeight();
 		batteryBroadcast = new BatteryInfoBroadcastReceiver();
 		registerReceiver(batteryBroadcast, new IntentFilter(BATTERY_CHANGED));
 	}
@@ -167,8 +178,10 @@ public class EmmageeService extends Service {
 				int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, 0);
 				int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
 				totalBatt = String.valueOf(level * 100 / scale);
-				voltage = String.valueOf(intent.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) * 1.0 / 1000);
-				temperature = String.valueOf(intent.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) * 1.0 / 10);
+				voltage = String.valueOf(intent.getIntExtra(
+						BatteryManager.EXTRA_VOLTAGE, -1) * 1.0 / 1000);
+				temperature = String.valueOf(intent.getIntExtra(
+						BatteryManager.EXTRA_TEMPERATURE, -1) * 1.0 / 10);
 			}
 
 		}
@@ -178,24 +191,38 @@ public class EmmageeService extends Service {
 	@Override
 	public int onStartCommand(Intent intent, int flags, int startId) {
 		Log.i(LOG_TAG, "service onStart");
-		PendingIntent contentIntent = PendingIntent.getActivity(getBaseContext(), 0, new Intent(this, MainPageActivity.class), 0);
-		NotificationCompat.Builder builder = new NotificationCompat.Builder(this);
-		builder.setContentIntent(contentIntent).setSmallIcon(R.drawable.icon).setWhen(System.currentTimeMillis()).setAutoCancel(true)
+		PendingIntent contentIntent = PendingIntent.getActivity(
+				getBaseContext(), 0, new Intent(this, MainPageActivity.class),
+				0);
+		NotificationCompat.Builder builder = new NotificationCompat.Builder(
+				this);
+		builder.setContentIntent(contentIntent).setSmallIcon(R.drawable.icon)
+				.setWhen(System.currentTimeMillis()).setAutoCancel(true)
 				.setContentTitle("Emmagee");
 		startForeground(startId, builder.build());
 
 		pid = intent.getExtras().getInt("pid");
-		uid = intent.getExtras().getInt("uid");
+		//uid = intent.getExtras().getInt("uid");
 		processName = intent.getExtras().getString("processName");
 		packageName = intent.getExtras().getString("packageName");
 		startActivity = intent.getExtras().getString("startActivity");
 
+		try {
+			PackageManager pm = getPackageManager();
+			ApplicationInfo ainfo = pm.getApplicationInfo(packageName, PackageManager.GET_ACTIVITIES);
+			uid = ainfo.uid;
+		}catch (PackageManager.NameNotFoundException e) {
+			e.printStackTrace();
+		}
 		cpuInfo = new CpuInfo(getBaseContext(), pid, Integer.toString(uid));
 		readSettingInfo();
 		if (isFloating) {
-			viFloatingWindow = LayoutInflater.from(this).inflate(R.layout.floating, null);
-			txtUnusedMem = (TextView) viFloatingWindow.findViewById(R.id.memunused);
-			txtTotalMem = (TextView) viFloatingWindow.findViewById(R.id.memtotal);
+			viFloatingWindow = LayoutInflater.from(this).inflate(
+					R.layout.floating, null);
+			txtUnusedMem = (TextView) viFloatingWindow
+					.findViewById(R.id.memunused);
+			txtTotalMem = (TextView) viFloatingWindow
+					.findViewById(R.id.memtotal);
 			txtTraffic = (TextView) viFloatingWindow.findViewById(R.id.traffic);
 			btnWifi = (Button) viFloatingWindow.findViewById(R.id.wifi);
 
@@ -233,13 +260,17 @@ public class EmmageeService extends Service {
 	 * @throws IOException
 	 */
 	private void readSettingInfo() {
-		SharedPreferences preferences = Settings.getDefaultSharedPreferences(getApplicationContext());
+		SharedPreferences preferences = Settings
+				.getDefaultSharedPreferences(getApplicationContext());
 		int interval = preferences.getInt(Settings.KEY_INTERVAL, 5);
+		scheduleTime = preferences.getInt(Settings.KEY_SCHEDULE_TIME, 0) * 60 * 1000;
+		Log.d("emm", "read from preference:" + preferences.getInt(Settings.KEY_SCHEDULE_TIME, 0));
 		delaytime = interval * 1000;
 		isFloating = preferences.getBoolean(Settings.KEY_ISFLOAT, true);
 		sender = preferences.getString(Settings.KEY_SENDER, BLANK_STRING);
 		password = preferences.getString(Settings.KEY_PASSWORD, BLANK_STRING);
-		recipients = preferences.getString(Settings.KEY_RECIPIENTS, BLANK_STRING);
+		recipients = preferences.getString(Settings.KEY_RECIPIENTS,
+				BLANK_STRING);
 		receivers = recipients.split("\\s+");
 		smtp = preferences.getString(Settings.KEY_SMTP, BLANK_STRING);
 		isRoot = preferences.getBoolean(Settings.KEY_ROOT, false);
@@ -255,17 +286,22 @@ public class EmmageeService extends Service {
 		String mDateTime;
 		String heapData = "";
 		if ((Build.MODEL.equals("sdk")) || (Build.MODEL.equals("google_sdk")))
-			mDateTime = formatter.format(cal.getTime().getTime() + 8 * 60 * 60 * 1000);
+			mDateTime = formatter.format(cal.getTime().getTime() + 8 * 60 * 60
+					* 1000);
 		else
 			mDateTime = formatter.format(cal.getTime().getTime());
-		if (android.os.Environment.getExternalStorageState().equals(android.os.Environment.MEDIA_MOUNTED)) {
+		if (android.os.Environment.getExternalStorageState().equals(
+				android.os.Environment.MEDIA_MOUNTED)) {
 			// 在4.0以下的低版本上/sdcard连接至/mnt/sdcard，而4.0以上版本则连接至/storage/sdcard0，所以有外接sdcard，/sdcard路径一定存在
-			resultFilePath = "/sdcard" + File.separator + "Emmagee_TestResult_" + mDateTime + ".csv";
+			resultFilePath = "/sdcard" + File.separator + "Emmagee_TestResult_"
+					+ mDateTime + ".csv";
 			// resultFilePath =
 			// android.os.Environment.getExternalStorageDirectory() +
 			// File.separator + "Emmagee_TestResult_" + mDateTime + ".csv";
 		} else {
-			resultFilePath = getBaseContext().getFilesDir().getPath() + File.separator + "Emmagee_TestResult_" + mDateTime + ".csv";
+			resultFilePath = getBaseContext().getFilesDir().getPath()
+					+ File.separator + "Emmagee_TestResult_" + mDateTime
+					+ ".csv";
 		}
 		try {
 			File resultFile = new File(resultFilePath);
@@ -279,28 +315,47 @@ public class EmmageeService extends Service {
 			// titles of multiple cpu cores
 			ArrayList<String> cpuList = cpuInfo.getCpuList();
 			for (int i = 0; i < cpuList.size(); i++) {
-				multiCpuTitle += Constants.COMMA + cpuList.get(i) + getString(R.string.total_usage);
+				multiCpuTitle += Constants.COMMA + cpuList.get(i)
+						+ getString(R.string.total_usage);
 			}
-			bw.write(getString(R.string.process_package) + Constants.COMMA + packageName + Constants.LINE_END + getString(R.string.process_name)
-					+ Constants.COMMA + processName + Constants.LINE_END + getString(R.string.process_pid) + Constants.COMMA + pid
-					+ Constants.LINE_END + getString(R.string.mem_size) + Constants.COMMA + totalMemory + "MB" + Constants.LINE_END
-					+ getString(R.string.cpu_type) + Constants.COMMA + cpuInfo.getCpuName() + Constants.LINE_END
-					+ getString(R.string.android_system_version) + Constants.COMMA + memoryInfo.getSDKVersion() + Constants.LINE_END
-					+ getString(R.string.mobile_type) + Constants.COMMA + memoryInfo.getPhoneType() + Constants.LINE_END + "UID" + Constants.COMMA
-					+ uid + Constants.LINE_END);
+			bw.write(getString(R.string.process_package) + Constants.COMMA
+					+ packageName + Constants.LINE_END
+					+ getString(R.string.process_name) + Constants.COMMA
+					+ processName + Constants.LINE_END
+					+ getString(R.string.process_pid) + Constants.COMMA + pid
+					+ Constants.LINE_END + getString(R.string.mem_size)
+					+ Constants.COMMA + totalMemory + "MB" + Constants.LINE_END
+					+ getString(R.string.cpu_type) + Constants.COMMA
+					+ cpuInfo.getCpuName() + Constants.LINE_END
+					+ getString(R.string.android_system_version)
+					+ Constants.COMMA + memoryInfo.getSDKVersion()
+					+ Constants.LINE_END + getString(R.string.mobile_type)
+					+ Constants.COMMA + memoryInfo.getPhoneType()
+					+ Constants.LINE_END + "UID" + Constants.COMMA + uid
+					+ Constants.LINE_END);
 
 			if (isGrantedReadLogsPermission()) {
 				bw.write(START_TIME);
 			}
 			if (isRoot) {
-				heapData = getString(R.string.native_heap) + Constants.COMMA + getString(R.string.dalvik_heap) + Constants.COMMA;
+				heapData = getString(R.string.native_heap) + Constants.COMMA
+						+ getString(R.string.dalvik_heap) + Constants.COMMA;
 			}
-			bw.write(getString(R.string.timestamp) + Constants.COMMA + getString(R.string.top_activity) + Constants.COMMA + heapData
-					+ getString(R.string.used_mem_PSS) + Constants.COMMA + getString(R.string.used_mem_ratio) + Constants.COMMA
-					+ getString(R.string.mobile_free_mem) + Constants.COMMA + getString(R.string.app_used_cpu_ratio) + Constants.COMMA
-					+ getString(R.string.total_used_cpu_ratio) + multiCpuTitle + Constants.COMMA + getString(R.string.traffic) + Constants.COMMA
-					+ getString(R.string.battery) + Constants.COMMA + getString(R.string.current) + Constants.COMMA + getString(R.string.temperature)
-					+ Constants.COMMA + getString(R.string.voltage) + Constants.LINE_END);
+			bw.write(getString(R.string.timestamp) + Constants.COMMA
+					+ getString(R.string.top_activity) + Constants.COMMA
+					+ heapData + getString(R.string.used_mem_PSS)
+					+ Constants.COMMA + getString(R.string.used_mem_ratio)
+					+ Constants.COMMA + getString(R.string.mobile_free_mem)
+					+ Constants.COMMA + getString(R.string.app_used_cpu_ratio)
+					+ Constants.COMMA
+					+ getString(R.string.total_used_cpu_ratio) + multiCpuTitle
+					+ Constants.COMMA + getString(R.string.traffic)
+					+ Constants.COMMA + getString(R.string.battery)
+					+ Constants.COMMA + getString(R.string.current)
+					+ Constants.COMMA + getString(R.string.temperature)
+					+ Constants.COMMA + getString(R.string.voltage)
+					+ Constants.COMMA + getString(R.string.fps)
+					+ Constants.LINE_END);
 		} catch (IOException e) {
 			Log.e(LOG_TAG, e.getMessage());
 		}
@@ -310,11 +365,13 @@ public class EmmageeService extends Service {
 	 * create a floating window to show real-time data.
 	 */
 	private void createFloatingWindow() {
-		SharedPreferences shared = getSharedPreferences("float_flag", Activity.MODE_PRIVATE);
+		SharedPreferences shared = getSharedPreferences("float_flag",
+				Activity.MODE_PRIVATE);
 		SharedPreferences.Editor editor = shared.edit();
 		editor.putInt("float", 1);
 		editor.commit();
-		windowManager = (WindowManager) getApplicationContext().getSystemService("window");
+		windowManager = (WindowManager) getApplicationContext()
+				.getSystemService("window");
 		wmParams = ((MyApplication) getApplication()).getMywmParams();
 		wmParams.type = 2002;
 		wmParams.flags |= 8;
@@ -328,7 +385,7 @@ public class EmmageeService extends Service {
 		viFloatingWindow.setOnTouchListener(new OnTouchListener() {
 			public boolean onTouch(View v, MotionEvent event) {
 				x = event.getRawX();
-				y = event.getRawY() - 25;
+				y = event.getRawY() - statusBarHeight;
 				switch (event.getAction()) {
 				case MotionEvent.ACTION_DOWN:
 					mTouchStartX = event.getX();
@@ -339,7 +396,6 @@ public class EmmageeService extends Service {
 					break;
 				case MotionEvent.ACTION_UP:
 					updateViewPosition();
-					// showImg();
 					mTouchStartX = mTouchStartY = 0;
 					break;
 				}
@@ -353,7 +409,8 @@ public class EmmageeService extends Service {
 				try {
 					btnWifi = (Button) viFloatingWindow.findViewById(R.id.wifi);
 					String buttonText = (String) btnWifi.getText();
-					String wifiText = getResources().getString(R.string.open_wifi);
+					String wifiText = getResources().getString(
+							R.string.open_wifi);
 					if (buttonText.equals(wifiText)) {
 						wifiManager.setWifiEnabled(true);
 						btnWifi.setText(R.string.close_wifi);
@@ -362,7 +419,9 @@ public class EmmageeService extends Service {
 						btnWifi.setText(R.string.open_wifi);
 					}
 				} catch (Exception e) {
-					Toast.makeText(viFloatingWindow.getContext(), getString(R.string.wifi_fail_toast), Toast.LENGTH_LONG).show();
+					Toast.makeText(viFloatingWindow.getContext(),
+							getString(R.string.wifi_fail_toast),
+							Toast.LENGTH_LONG).show();
 					Log.e(LOG_TAG, e.toString());
 				}
 			}
@@ -374,7 +433,18 @@ public class EmmageeService extends Service {
 		public void run() {
 			if (!isServiceStop) {
 				dataRefresh();
-				handler.postDelayed(this, delaytime);
+				if (alreadyRunTime >= scheduleTime && scheduleTime != 0) {
+					Log.d("emm", "to finish");
+					Intent intent = new Intent();
+					intent.putExtra("isServiceStop", true);
+					intent.setAction(SERVICE_ACTION);
+					sendBroadcast(intent);
+					stopSelf();
+				} else {
+					Log.d("emm", "alreadyRunTime:" + alreadyRunTime + " scheduletime:" + scheduleTime);
+					alreadyRunTime += delaytime;
+					handler.postDelayed(this, delaytime);
+				}
 				if (isFloating && viFloatingWindow != null) {
 					windowManager.updateViewLayout(viFloatingWindow, wmParams);
 				}
@@ -401,21 +471,26 @@ public class EmmageeService extends Service {
 			// filter logcat by Tag:ActivityManager and Level:Info
 			String logcatCommand = "logcat -v time -d ActivityManager:I *:S";
 			Process process = Runtime.getRuntime().exec(logcatCommand);
-			BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+			BufferedReader bufferedReader = new BufferedReader(
+					new InputStreamReader(process.getInputStream()));
 			StringBuilder strBuilder = new StringBuilder();
 			String line = BLANK_STRING;
 
 			while ((line = bufferedReader.readLine()) != null) {
 				strBuilder.append(line);
 				strBuilder.append(Constants.LINE_END);
-				String regex = ".*Displayed.*" + startActivity + ".*\\+(.*)ms.*";
+				String regex = ".*Displayed.*" + startActivity
+						+ ".*\\+(.*)ms.*";
 				if (line.matches(regex)) {
 					Log.w("my logs", line);
 					if (line.contains("total")) {
 						line = line.substring(0, line.indexOf("total"));
 					}
-					startTime = line.substring(line.lastIndexOf("+") + 1, line.lastIndexOf("ms") + 2);
-					Toast.makeText(EmmageeService.this, getString(R.string.start_time) + startTime, Toast.LENGTH_LONG).show();
+					startTime = line.substring(line.lastIndexOf("+") + 1,
+							line.lastIndexOf("ms") + 2);
+					Toast.makeText(EmmageeService.this,
+							getString(R.string.start_time) + startTime,
+							Toast.LENGTH_LONG).show();
 					isGetStartTime = false;
 					break;
 				}
@@ -432,7 +507,8 @@ public class EmmageeService extends Service {
 	 * @return
 	 */
 	private boolean isGrantedReadLogsPermission() {
-		int permissionState = getPackageManager().checkPermission(android.Manifest.permission.READ_LOGS, getPackageName());
+		int permissionState = getPackageManager().checkPermission(
+				android.Manifest.permission.READ_LOGS, getPackageName());
 		return permissionState == PackageManager.PERMISSION_GRANTED;
 	}
 
@@ -457,7 +533,9 @@ public class EmmageeService extends Service {
 		} catch (Exception e) {
 			currentBatt = Constants.NA;
 		}
-		ArrayList<String> processInfo = cpuInfo.getCpuRatioInfo(totalBatt, currentBatt, temperature, voltage, isRoot);
+		ArrayList<String> processInfo = cpuInfo.getCpuRatioInfo(totalBatt,
+				currentBatt, temperature, voltage,
+				String.valueOf(fpsInfo.fps()), isRoot);
 		if (isFloating) {
 			String processCpuRatio = "0.00";
 			String totalCpuRatio = "0.00";
@@ -469,7 +547,8 @@ public class EmmageeService extends Service {
 				processCpuRatio = processInfo.get(0);
 				totalCpuRatio = processInfo.get(1);
 				trafficSize = processInfo.get(2);
-				if (!(BLANK_STRING.equals(trafficSize)) && !("-1".equals(trafficSize))) {
+				if (!(BLANK_STRING.equals(trafficSize))
+						&& !("-1".equals(trafficSize))) {
 					tempTraffic = Long.parseLong(trafficSize);
 					if (tempTraffic > 1024) {
 						isMb = true;
@@ -478,15 +557,22 @@ public class EmmageeService extends Service {
 				}
 				// 如果cpu使用率存在且都不小于0，则输出
 				if (processCpuRatio != null && totalCpuRatio != null) {
-					txtUnusedMem.setText(getString(R.string.process_free_mem) + processMemory + "/" + freeMemoryKb + "MB");
-					txtTotalMem.setText(getString(R.string.process_overall_cpu) + processCpuRatio + "%/" + totalCpuRatio + "%");
+					txtUnusedMem.setText(getString(R.string.process_free_mem)
+							+ processMemory + "/" + freeMemoryKb + "MB");
+					txtTotalMem.setText(getString(R.string.process_overall_cpu)
+							+ processCpuRatio + "%/" + totalCpuRatio + "%");
 					String batt = getString(R.string.current) + currentBatt;
 					if ("-1".equals(trafficSize)) {
-						txtTraffic.setText(batt + Constants.COMMA + getString(R.string.traffic) + Constants.NA);
+						txtTraffic.setText(batt + Constants.COMMA
+								+ getString(R.string.traffic) + Constants.NA);
 					} else if (isMb)
-						txtTraffic.setText(batt + Constants.COMMA + getString(R.string.traffic) + fomart.format(trafficMb) + "MB");
+						txtTraffic.setText(batt + Constants.COMMA
+								+ getString(R.string.traffic)
+								+ fomart.format(trafficMb) + "MB");
 					else
-						txtTraffic.setText(batt + Constants.COMMA + getString(R.string.traffic) + trafficSize + "KB");
+						txtTraffic.setText(batt + Constants.COMMA
+								+ getString(R.string.traffic) + trafficSize
+								+ "KB");
 				}
 				// 当内存为0切cpu使用率为0时则是被测应用退出
 				if ("0".equals(processMemory)) {
@@ -497,11 +583,13 @@ public class EmmageeService extends Service {
 					} else {
 						Log.i(LOG_TAG, "未设置自动停止测试，继续监听");
 						// 如果设置应用退出后不自动停止，则需要每次监听时重新获取pid
-						Programe programe = procInfo.getProgrameByPackageName(this, packageName);
+						Programe programe = procInfo.getProgrameByPackageName(
+								this, packageName);
 						if (programe != null && programe.getPid() > 0) {
 							pid = programe.getPid();
 							uid = programe.getUid();
-							cpuInfo = new CpuInfo(getBaseContext(), pid, Integer.toString(uid));
+							cpuInfo = new CpuInfo(getBaseContext(), pid,
+									Integer.toString(uid));
 						}
 					}
 				}
@@ -527,8 +615,10 @@ public class EmmageeService extends Service {
 	public void closeOpenedStream() {
 		try {
 			if (bw != null) {
-				bw.write(getString(R.string.comment1) + Constants.LINE_END + getString(R.string.comment2) + Constants.LINE_END
-						+ getString(R.string.comment3) + Constants.LINE_END + getString(R.string.comment4) + Constants.LINE_END);
+				bw.write(getString(R.string.comment1) + Constants.LINE_END
+						+ getString(R.string.comment2) + Constants.LINE_END
+						+ getString(R.string.comment3) + Constants.LINE_END
+						+ getString(R.string.comment4) + Constants.LINE_END);
 				bw.close();
 			}
 			if (osw != null)
@@ -551,7 +641,9 @@ public class EmmageeService extends Service {
 		closeOpenedStream();
 		// replace the start time in file
 		if (!BLANK_STRING.equals(startTime)) {
-			replaceFileString(resultFilePath, START_TIME, getString(R.string.start_time) + startTime + Constants.LINE_END);
+			replaceFileString(resultFilePath, START_TIME,
+					getString(R.string.start_time) + startTime
+							+ Constants.LINE_END);
 		} else {
 			replaceFileString(resultFilePath, START_TIME, BLANK_STRING);
 		}
@@ -559,15 +651,23 @@ public class EmmageeService extends Service {
 		unregisterReceiver(batteryBroadcast);
 		boolean isSendSuccessfully = false;
 		try {
-			isSendSuccessfully = MailSender.sendTextMail(sender, des.decrypt(password), smtp, "Emmagee Performance Test Report", "see attachment",
+			isSendSuccessfully = MailSender.sendTextMail(sender,
+					des.decrypt(password), smtp,
+					"Emmagee Performance Test Report", "see attachment",
 					resultFilePath, receivers);
 		} catch (Exception e) {
 			isSendSuccessfully = false;
 		}
 		if (isSendSuccessfully) {
-			Toast.makeText(this, getString(R.string.send_success_toast) + recipients, Toast.LENGTH_LONG).show();
+			Toast.makeText(this,
+					getString(R.string.send_success_toast) + recipients,
+					Toast.LENGTH_LONG).show();
 		} else {
-			Toast.makeText(this, getString(R.string.send_fail_toast) + EmmageeService.resultFilePath, Toast.LENGTH_LONG).show();
+			Toast.makeText(
+					this,
+					getString(R.string.send_fail_toast)
+							+ EmmageeService.resultFilePath, Toast.LENGTH_LONG)
+					.show();
 		}
 		super.onDestroy();
 		stopForeground(true);
@@ -581,7 +681,8 @@ public class EmmageeService extends Service {
 	 * @param replaceType
 	 * @param replaceString
 	 */
-	private void replaceFileString(String filePath, String replaceType, String replaceString) {
+	private void replaceFileString(String filePath, String replaceType,
+			String replaceString) {
 		try {
 			File file = new File(filePath);
 			BufferedReader reader = new BufferedReader(new FileReader(file));
@@ -593,12 +694,30 @@ public class EmmageeService extends Service {
 			reader.close();
 			// replace a word in a file
 			String newtext = oldtext.replaceAll(replaceType, replaceString);
-			BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(new FileOutputStream(filePath), getString(R.string.csv_encoding)));
+			BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(
+					new FileOutputStream(filePath),
+					getString(R.string.csv_encoding)));
 			writer.write(newtext);
 			writer.close();
 		} catch (IOException e) {
 			Log.d(LOG_TAG, e.getMessage());
 		}
+	}
+
+	/**
+	 * get height of status bar
+	 * 
+	 * @return height of status bar, if default method does not work, return 25
+	 */
+	public int getStatusBarHeight() {
+		// set status bar height to 25
+		int barHeight = 25;
+		int resourceId = getResources().getIdentifier("status_bar_height",
+				"dimen", "android");
+		if (resourceId > 0) {
+			barHeight = getResources().getDimensionPixelSize(resourceId);
+		}
+		return barHeight;
 	}
 
 	@Override
